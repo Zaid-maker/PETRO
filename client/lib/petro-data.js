@@ -1,0 +1,239 @@
+const REAL_PRICES = {
+  petrolRON92: 458.41,
+  diesel: 520.35,
+  kerosene: 457.8,
+  petrolRON95: 510.0,
+  cng: 250.0,
+  lastUpdated: "April 3, 2026",
+  source: "OGRA / Ministry of Energy",
+  previousPetrol: 321.17,
+  previousDiesel: 335.86,
+};
+
+const BRENT_CRUDE = 109.12;
+
+const CITIES = [
+  { name: "Karachi", region: "Sindh", isPort: true },
+  { name: "Lahore", region: "Punjab", isPort: false },
+  { name: "Islamabad", region: "ICT", isPort: false },
+  { name: "Rawalpindi", region: "Punjab", isPort: false },
+  { name: "Peshawar", region: "KPK", isPort: false },
+  { name: "Quetta", region: "Balochistan", isPort: false },
+  { name: "Multan", region: "Punjab", isPort: false },
+  { name: "Faisalabad", region: "Punjab", isPort: false },
+];
+
+const CITY_BASE_WEIGHT = {
+  Karachi: 0.55,
+  Lahore: 0.35,
+  Islamabad: 0.4,
+  Rawalpindi: 0.38,
+  Peshawar: 0.25,
+  Quetta: 0.2,
+  Multan: 0.3,
+  Faisalabad: 0.32,
+};
+
+const FEED_PROMPT = `You are a fuel crisis news aggregator for Pakistan. Provide factual crisis updates based on real verified events as of April 2026.
+
+Real facts to use:
+- US-Israel launched strikes on Iran on Feb 28, 2026 (Operation Epic Fury)
+- Iran blocked the Strait of Hormuz on Mar 4, 2026
+- Pakistan raised petrol to Rs458.41/L (+Rs137.24) and diesel to Rs520.35/L (+Rs184.49) on Apr 3, 2026
+- Previous prices (Mar 7): petrol Rs321.17, diesel Rs335.86
+- Brent crude peaked at $126/bbl, now ~$109
+- Motorcycle subsidy: Rs100/L off on up to 20L/month
+- Quetta and Peshawar have worst shortages due to distance from ports
+- Karachi port still receiving some tankers despite disruptions
+- PM Shehbaz Sharif had rejected two earlier summary hikes
+- IMF programme ongoing; PDL (petroleum development levy) ~Rs70/L
+
+Return ONLY a JSON array of exactly 5 items. No markdown. No preamble. Schema per item: { "tag": "crisis"|"supply"|"price"|"policy", "headline": max 85 chars, "detail": max 110 chars, "time": plausible time like "2h ago" or "Apr 3" }`;
+
+function weightedStatus(weight) {
+  if (weight < 0.25) return "Critical";
+  if (weight < 0.4) return "Severe";
+  if (weight < 0.6) return "Moderate";
+  return "Stable";
+}
+
+function randomBetween(min, max) {
+  return +(Math.random() * (max - min) + min).toFixed(1);
+}
+
+function generateCityData() {
+  return CITIES.map((city) => {
+    const weight = Math.min(
+      1,
+      Math.max(0, CITY_BASE_WEIGHT[city.name] + randomBetween(-0.06, 0.06))
+    );
+    const status = weightedStatus(weight);
+    const availabilityScore = Math.round(weight * 100);
+    const isCritical = status === "Critical";
+    const isSevere = status === "Severe";
+
+    return {
+      ...city,
+      status,
+      availabilityScore,
+      queueLength: Math.floor(
+        randomBetween(isCritical ? 50 : isSevere ? 25 : 5, isCritical ? 120 : isSevere ? 70 : 30)
+      ),
+      pumpsFunctional: `${Math.floor(
+        randomBetween(isCritical ? 2 : 5, isCritical ? 6 : 14)
+      )}/${Math.floor(randomBetween(14, 22))}`,
+      lastRestocked: `${Math.floor(
+        randomBetween(isCritical ? 24 : 4, isCritical ? 72 : 18)
+      )}h ago`,
+      priceRON92: isCritical
+        ? +(REAL_PRICES.petrolRON92 + randomBetween(20, 80)).toFixed(2)
+        : REAL_PRICES.petrolRON92,
+      priceDiesel: isCritical
+        ? +(REAL_PRICES.diesel + randomBetween(30, 100)).toFixed(2)
+        : REAL_PRICES.diesel,
+      blackMarket: isCritical,
+      supplyChain: Math.round(weight * 100 + randomBetween(-5, 5)),
+      storageLevel: Math.round(weight * 80 + randomBetween(5, 20)),
+    };
+  });
+}
+
+function sanitizeFeedItems(items) {
+  if (!Array.isArray(items)) return null;
+
+  const normalized = items
+    .map((item) => ({
+      tag: typeof item?.tag === "string" ? item.tag.toLowerCase() : "crisis",
+      headline: typeof item?.headline === "string" ? item.headline.trim() : "",
+      detail: typeof item?.detail === "string" ? item.detail.trim() : "",
+      time: typeof item?.time === "string" ? item.time.trim() : "",
+    }))
+    .filter((item) => item.headline && item.detail && item.time);
+
+  if (normalized.length !== 5) return null;
+
+  return normalized.map((item) => ({
+    ...item,
+    tag: ["crisis", "supply", "price", "policy"].includes(item.tag) ? item.tag : "crisis",
+  }));
+}
+
+function getFallbackFeedItems() {
+  return [
+    {
+      tag: "crisis",
+      headline: "Hormuz disruption keeps Pakistan fuel market under pressure",
+      detail: "Import costs remain elevated as shipping routes stay constrained after the March closure.",
+      time: "Apr 5",
+    },
+    {
+      tag: "price",
+      headline: "OGRA price jump leaves petrol at Rs458.41 and diesel at Rs520.35",
+      detail: "The April 3 revision remains the current official benchmark for retail fuel pricing.",
+      time: "Apr 3",
+    },
+    {
+      tag: "supply",
+      headline: "Karachi supply stays firmer than inland markets",
+      detail: "Port access is helping Karachi recover faster while Quetta and Peshawar face sharper shortages.",
+      time: "6h ago",
+    },
+    {
+      tag: "policy",
+      headline: "Motorcycle subsidy still softens the blow for small consumers",
+      detail: "Eligible riders can receive Rs100 per litre relief on up to 20 litres per month.",
+      time: "8h ago",
+    },
+    {
+      tag: "supply",
+      headline: "Modelled availability remains weakest in western and northern cities",
+      detail: "Distance from ports and transport bottlenecks continue to stretch queue times and restocks.",
+      time: "10h ago",
+    },
+  ];
+}
+
+async function fetchAIFeedItems() {
+  const apiKey = process.env.ANTHROPIC_API_KEY;
+
+  if (!apiKey) {
+    return {
+      items: getFallbackFeedItems(),
+      sourceLabel: "Fallback Feed",
+      feedError: "ANTHROPIC_API_KEY is not configured",
+    };
+  }
+
+  try {
+    const response = await fetch("https://api.anthropic.com/v1/messages", {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+        "x-api-key": apiKey,
+        "anthropic-version": "2023-06-01",
+      },
+      body: JSON.stringify({
+        model: "claude-sonnet-4-20250514",
+        max_tokens: 1000,
+        system: FEED_PROMPT,
+        messages: [
+          {
+            role: "user",
+            content: "Generate 5 Pakistan petrol crisis news items. JSON array only, no explanation.",
+          },
+        ],
+      }),
+    });
+
+    if (!response.ok) {
+      throw new Error(`Anthropic request failed with status ${response.status}`);
+    }
+
+    const data = await response.json();
+    const text = (data.content || []).map((block) => block.text || "").join("");
+    const cleaned = text.replace(/```json|```/g, "").trim();
+    const items = sanitizeFeedItems(JSON.parse(cleaned));
+
+    if (!items) {
+      throw new Error("Anthropic returned an unexpected feed format");
+    }
+
+    return { items, sourceLabel: "Claude AI", feedError: null };
+  } catch (error) {
+    return {
+      items: getFallbackFeedItems(),
+      sourceLabel: "Fallback Feed",
+      feedError: error instanceof Error ? error.message : "AI feed unavailable",
+    };
+  }
+}
+
+export async function getPetroDashboardData() {
+  const cities = generateCityData();
+  const critical = cities.filter((city) => city.status === "Critical").length;
+  const severe = cities.filter((city) => city.status === "Severe").length;
+  const avgAvailability = Math.round(
+    cities.reduce((sum, city) => sum + city.availabilityScore, 0) / cities.length
+  );
+  const feed = await fetchAIFeedItems();
+
+  return {
+    generatedAt: new Date().toISOString(),
+    prices: REAL_PRICES,
+    brentCrude: BRENT_CRUDE,
+    cities,
+    stats: {
+      critical,
+      severe,
+      avgAvailability,
+      citiesInCrisis: critical + severe,
+      histAvail: [72, 65, 58, 44, 38, 31, avgAvailability],
+      days: ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"],
+    },
+    feed: {
+      items: feed.items,
+      sourceLabel: feed.sourceLabel,
+      error: feed.feedError,
+    },
+  };
+}
