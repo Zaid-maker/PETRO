@@ -11,6 +11,8 @@ const REAL_PRICES = {
 };
 
 const BRENT_CRUDE = 109.12;
+const PAKWHEELS_PRICES_URL = "https://www.pakwheels.com/petroleum-prices-in-pakistan";
+const EIA_BRENT_URL = "https://www.eia.gov/dnav/pet/pet_pri_spt_s1_d.htm";
 
 const CITIES = [
   { name: "Karachi", region: "Sindh", isPort: true },
@@ -153,6 +155,137 @@ function getFallbackFeedItems() {
   ];
 }
 
+async function fetchPage(url) {
+  const response = await fetch(url, {
+    headers: {
+      "user-agent":
+        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/123.0.0.0 Safari/537.36",
+      accept: "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+    },
+    cache: "no-store",
+  });
+
+  if (!response.ok) {
+    throw new Error(`Source request failed with status ${response.status}`);
+  }
+
+  return response.text();
+}
+
+function normalizeHtmlToText(html) {
+  return html
+    .replace(/<script[\s\S]*?<\/script>/gi, " ")
+    .replace(/<style[\s\S]*?<\/style>/gi, " ")
+    .replace(/<[^>]+>/g, " ")
+    .replace(/&nbsp;/gi, " ")
+    .replace(/&#39;/g, "'")
+    .replace(/&amp;/gi, "&")
+    .replace(/&quot;/gi, '"')
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+function parsePakWheelsPrices(html) {
+  const text = normalizeHtmlToText(html);
+  const summaryMatch = text.match(
+    /Current and Latest Petrol Price in Pakistan is Rs\.\s*([\d.]+)\/Ltr,\s*High Speed Diesel is Rs\.\s*([\d.]+)\/Ltr/i
+  );
+  const effectiveDateMatch = text.match(/Prices w\.e\.f\s+([0-9]{2}-[A-Za-z]+-[0-9]{4})/i);
+  const petrolRowMatch = text.match(/Petrol \(Super\)\s+PKR\s+([\d.]+)\s+PKR\s+([\d.]+)\s+([\d.]+)/i);
+  const dieselRowMatch = text.match(/High Speed Diesel\s+PKR\s+([\d.]+)\s+PKR\s+([\d.]+)\s+([\d.]+)/i);
+  const keroseneRowMatch = text.match(/Kerosene Oil\s+PKR\s+([\d.]+)\s+PKR\s+([\d.]+)\s+([\d.]+)/i);
+  const lsdRowMatch = text.match(/Light Speed Diesel\s+PKR\s+([\d.]+)\s+PKR\s+([\d.]+)\s+([\d.]+)/i);
+  const lpgMatch = text.match(/liquid petroleum price in Pakistan is RS\s*([\d.]+)\s*per kg,\s*effective\s*([A-Za-z]+\s+\d{1,2},\s+\d{4})/i);
+
+  if (!summaryMatch || !petrolRowMatch || !dieselRowMatch || !keroseneRowMatch) {
+    throw new Error("Unable to parse Pakistan fuel prices from PakWheels");
+  }
+
+  return {
+    petrolRON92: Number(summaryMatch[1]),
+    diesel: Number(summaryMatch[2]),
+    kerosene: Number(keroseneRowMatch[2]),
+    previousPetrol: Number(petrolRowMatch[1]),
+    previousDiesel: Number(dieselRowMatch[1]),
+    lastUpdated: effectiveDateMatch ? effectiveDateMatch[1] : "Unknown",
+    source: "PakWheels live petroleum prices",
+    sourceUrl: PAKWHEELS_PRICES_URL,
+    petrolRON95: REAL_PRICES.petrolRON95,
+    cng: REAL_PRICES.cng,
+    lsd: lsdRowMatch ? Number(lsdRowMatch[2]) : null,
+    lpgPerKg: lpgMatch ? Number(lpgMatch[1]) : null,
+    lpgLastUpdated: lpgMatch ? lpgMatch[2] : null,
+  };
+}
+
+function parseEiaBrent(html) {
+  const text = normalizeHtmlToText(html);
+  const dateRowMatch = text.match(/Daily Weekly Monthly Annual ([0-9/ ]+) View History/i);
+  const brentRowMatch = text.match(/Brent - Europe\s+([0-9. ]+)\s+Conventional Gasoline/i);
+  const releaseDateMatch = text.match(/Release Date:\s*([0-9/]+)/i);
+
+  if (!dateRowMatch || !brentRowMatch) {
+    throw new Error("Unable to parse Brent crude prices from EIA");
+  }
+
+  const periods = dateRowMatch[1].trim().split(/\s+/);
+  const values = brentRowMatch[1].trim().split(/\s+/).map(Number);
+
+  return {
+    value: values.at(-1),
+    period: periods.at(-1) || null,
+    releaseDate: releaseDateMatch ? releaseDateMatch[1] : null,
+    source: "U.S. EIA spot prices",
+    sourceUrl: EIA_BRENT_URL,
+  };
+}
+
+async function fetchLivePakistanPrices() {
+  try {
+    const html = await fetchPage(PAKWHEELS_PRICES_URL);
+    return {
+      ...parsePakWheelsPrices(html),
+      live: true,
+      error: null,
+    };
+  } catch (error) {
+    return {
+      ...REAL_PRICES,
+      source: "Fallback static data",
+      sourceUrl: null,
+      live: false,
+      error: error instanceof Error ? error.message : "Failed to load Pakistan fuel prices",
+    };
+  }
+}
+
+async function fetchLiveBrentCrude() {
+  try {
+    const html = await fetchPage(EIA_BRENT_URL);
+    const parsed = parseEiaBrent(html);
+
+    return {
+      value: parsed.value,
+      period: parsed.period,
+      releaseDate: parsed.releaseDate,
+      source: parsed.source,
+      sourceUrl: parsed.sourceUrl,
+      live: true,
+      error: null,
+    };
+  } catch (error) {
+    return {
+      value: BRENT_CRUDE,
+      period: null,
+      releaseDate: null,
+      source: "Fallback static data",
+      sourceUrl: null,
+      live: false,
+      error: error instanceof Error ? error.message : "Failed to load Brent crude price",
+    };
+  }
+}
+
 async function fetchAIFeedItems() {
   const apiKey = process.env.ANTHROPIC_API_KEY;
 
@@ -209,18 +342,23 @@ async function fetchAIFeedItems() {
 }
 
 export async function getPetroDashboardData() {
+  const [prices, brent, feed] = await Promise.all([
+    fetchLivePakistanPrices(),
+    fetchLiveBrentCrude(),
+    fetchAIFeedItems(),
+  ]);
   const cities = generateCityData();
   const critical = cities.filter((city) => city.status === "Critical").length;
   const severe = cities.filter((city) => city.status === "Severe").length;
   const avgAvailability = Math.round(
     cities.reduce((sum, city) => sum + city.availabilityScore, 0) / cities.length
   );
-  const feed = await fetchAIFeedItems();
 
   return {
     generatedAt: new Date().toISOString(),
-    prices: REAL_PRICES,
-    brentCrude: BRENT_CRUDE,
+    prices,
+    brentCrude: brent.value,
+    brent,
     cities,
     stats: {
       critical,

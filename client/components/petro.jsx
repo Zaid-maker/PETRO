@@ -245,6 +245,11 @@ export default function Petro() {
   const feedItems = dashboard?.feed?.items ?? [];
   const feedError = dashboard?.feed?.error ?? null;
   const feedSource = dashboard?.feed?.sourceLabel;
+  const priceSource = prices?.source ?? "External source";
+  const brentSource = dashboard?.brent?.source ?? "External source";
+  const brentPeriod = dashboard?.brent?.period;
+  const priceStatusText = prices?.live ? "LIVE" : "FALLBACK";
+  const brentStatusText = dashboard?.brent?.live ? "LIVE" : "FALLBACK";
 
   return (
     <>
@@ -289,8 +294,8 @@ export default function Petro() {
             <strong>₨{prices?.petrolRON92 ?? "--"}/L</strong> and diesel to{" "}
             <strong>₨{prices?.diesel ?? "--"}/L</strong> on April 3 — the largest single-day hike in
             Pakistan&apos;s history (+₨137.24 and +₨184.49 respectively). Brent crude:{" "}
-            <strong>${dashboard?.brentCrude ?? "--"}/bbl</strong>. Next OGRA revision due mid-April
-            2026.
+            <strong>${dashboard?.brentCrude ?? "--"}/bbl</strong>. Pakistan retail source:{" "}
+            <strong>{priceSource}</strong>. Brent source: <strong>{brentSource}</strong>.
           </div>
 
           {dashboard ? (
@@ -299,7 +304,7 @@ export default function Petro() {
                 <KPICard
                   label="Petrol RON-92"
                   value={`₨${prices.petrolRON92}`}
-                  sub="OGRA official rate"
+                  sub={`${priceSource} · ${priceStatusText}`}
                   color="red"
                   change={`+₨${(prices.petrolRON92 - prices.previousPetrol).toFixed(2)} Apr 3`}
                   isReal
@@ -307,7 +312,7 @@ export default function Petro() {
                 <KPICard
                   label="Diesel HSD"
                   value={`₨${prices.diesel}`}
-                  sub="OGRA official rate"
+                  sub={`${priceSource} · ${priceStatusText}`}
                   color="orange"
                   change={`+₨${(prices.diesel - prices.previousDiesel).toFixed(2)} Apr 3`}
                   isReal
@@ -315,9 +320,9 @@ export default function Petro() {
                 <KPICard
                   label="Brent Crude"
                   value={`$${dashboard.brentCrude}`}
-                  sub="Per barrel (~Apr 2026)"
+                  sub={`${brentSource}${brentPeriod ? ` · ${brentPeriod}` : ""} · ${brentStatusText}`}
                   color="yellow"
-                  change="+75% since Feb 28"
+                  change={dashboard?.brent?.releaseDate ? `Release ${dashboard.brent.releaseDate}` : null}
                   isReal
                 />
                 <KPICard
@@ -338,7 +343,7 @@ export default function Petro() {
                 <div className="panel">
                   <div className="ph">
                     <span className="pt">City Status Matrix</span>
-                    <span className="stag">Prices and feed now come via /api/petro</span>
+                    <span className="stag">Live prices via /api/petro</span>
                   </div>
                   <table>
                     <thead>
@@ -416,7 +421,7 @@ export default function Petro() {
                   <div className="panel">
                     <div className="ph">
                       <span className="pt">OGRA Official Rates</span>
-                      <span className="pb">APR 3 2026</span>
+                      <span className="pb">{prices.lastUpdated || "LIVE"}</span>
                     </div>
                     <div className="pl">
                       {[
@@ -593,9 +598,9 @@ export default function Petro() {
                       <br />
                       • Dashboard API: <code>/api/petro</code>
                       <br />
-                      • Fuel prices: OGRA notification, April 3, 2026
+                      • Pakistan fuel prices: {priceSource}
                       <br />
-                      • Brent crude: Reuters / IEA reference value
+                      • Brent crude: {brentSource}
                       <br />
                       • City availability &amp; queues: server-side modelled estimates
                       <br />
@@ -620,11 +625,11 @@ export default function Petro() {
             <span className="tkl">⚡ LIVE</span>
             <div className="tks">
               <span className="tki">
-                &nbsp;&nbsp;▸ PETROL: ₨{prices.petrolRON92}/L (OGRA Apr 3) &nbsp;▸ DIESEL: ₨
+                &nbsp;&nbsp;▸ PETROL: ₨{prices.petrolRON92}/L ({priceStatusText}) &nbsp;▸ DIESEL: ₨
                 {prices.diesel}/L &nbsp;▸ KEROSENE: ₨{prices.kerosene}/L &nbsp;▸ BRENT: $
-                {dashboard.brentCrude}/bbl &nbsp;▸ API: /api/petro &nbsp;▸ NEXT OGRA REVISION:
-                MID-APRIL 2026 &nbsp;▸ MOTORCYCLE SUBSIDY: ₨100/L OFF ≤20L/MO &nbsp;▸ LARGEST
-                HIKE IN PAKISTAN HISTORY: +₨137.24/L PETROL &nbsp;
+                {dashboard.brentCrude}/bbl &nbsp;▸ API: /api/petro &nbsp;▸ PRICE SOURCE: {priceSource}
+                &nbsp;▸ BRENT SOURCE: {brentSource} &nbsp;▸ MOTORCYCLE SUBSIDY: ₨100/L OFF ≤20L/MO
+                &nbsp;▸ LARGEST HIKE IN PAKISTAN HISTORY: +₨137.24/L PETROL &nbsp;
                 {cities.map((city) => (
                   <span key={city.name}>
                     &nbsp;▸ {city.name.toUpperCase()}:{" "}
