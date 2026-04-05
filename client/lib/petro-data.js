@@ -1,3 +1,5 @@
+import { withRedisCache } from "@/lib/upstash-cache";
+
 const REAL_PRICES = {
   petrolRON92: 458.41,
   diesel: 520.35,
@@ -13,6 +15,9 @@ const REAL_PRICES = {
 const BRENT_CRUDE = 109.12;
 const PAKWHEELS_PRICES_URL = "https://www.pakwheels.com/petroleum-prices-in-pakistan";
 const EIA_BRENT_URL = "https://www.eia.gov/dnav/pet/pet_pri_spt_s1_d.htm";
+const PRICE_CACHE_TTL_SECONDS = 60 * 30;
+const BRENT_CACHE_TTL_SECONDS = 60 * 30;
+const FEED_CACHE_TTL_SECONDS = 60 * 10;
 
 const CITIES = [
   { name: "Karachi", region: "Sindh", isPort: true },
@@ -241,49 +246,50 @@ function parseEiaBrent(html) {
 }
 
 async function fetchLivePakistanPrices() {
-  try {
-    const html = await fetchPage(PAKWHEELS_PRICES_URL);
-    return {
-      ...parsePakWheelsPrices(html),
-      live: true,
-      error: null,
-    };
-  } catch (error) {
-    return {
-      ...REAL_PRICES,
-      source: "Fallback static data",
-      sourceUrl: null,
-      live: false,
-      error: error instanceof Error ? error.message : "Failed to load Pakistan fuel prices",
-    };
-  }
+  const { value, cache } = await withRedisCache(
+    "petro:prices:pakistan",
+    PRICE_CACHE_TTL_SECONDS,
+    async () => {
+      const html = await fetchPage(PAKWHEELS_PRICES_URL);
+
+      return {
+        ...parsePakWheelsPrices(html),
+        live: true,
+        error: null,
+      };
+    }
+  );
+
+  return {
+    ...value,
+    cache,
+  };
 }
 
 async function fetchLiveBrentCrude() {
-  try {
-    const html = await fetchPage(EIA_BRENT_URL);
-    const parsed = parseEiaBrent(html);
+  const { value, cache } = await withRedisCache(
+    "petro:prices:brent",
+    BRENT_CACHE_TTL_SECONDS,
+    async () => {
+      const html = await fetchPage(EIA_BRENT_URL);
+      const parsed = parseEiaBrent(html);
 
-    return {
-      value: parsed.value,
-      period: parsed.period,
-      releaseDate: parsed.releaseDate,
-      source: parsed.source,
-      sourceUrl: parsed.sourceUrl,
-      live: true,
-      error: null,
-    };
-  } catch (error) {
-    return {
-      value: BRENT_CRUDE,
-      period: null,
-      releaseDate: null,
-      source: "Fallback static data",
-      sourceUrl: null,
-      live: false,
-      error: error instanceof Error ? error.message : "Failed to load Brent crude price",
-    };
-  }
+      return {
+        value: parsed.value,
+        period: parsed.period,
+        releaseDate: parsed.releaseDate,
+        source: parsed.source,
+        sourceUrl: parsed.sourceUrl,
+        live: true,
+        error: null,
+      };
+    }
+  );
+
+  return {
+    ...value,
+    cache,
+  };
 }
 
 async function fetchAIFeedItems() {
@@ -298,53 +304,99 @@ async function fetchAIFeedItems() {
   }
 
   try {
-    const response = await fetch("https://api.anthropic.com/v1/messages", {
-      method: "POST",
-      headers: {
-        "content-type": "application/json",
-        "x-api-key": apiKey,
-        "anthropic-version": "2023-06-01",
-      },
-      body: JSON.stringify({
-        model: "claude-sonnet-4-20250514",
-        max_tokens: 1000,
-        system: FEED_PROMPT,
-        messages: [
-          {
-            role: "user",
-            content: "Generate 5 Pakistan petrol crisis news items. JSON array only, no explanation.",
+    const { value, cache } = await withRedisCache(
+      "petro:feed:ai",
+      FEED_CACHE_TTL_SECONDS,
+      async () => {
+        const response = await fetch("https://api.anthropic.com/v1/messages", {
+          method: "POST",
+          headers: {
+            "content-type": "application/json",
+            "x-api-key": apiKey,
+            "anthropic-version": "2023-06-01",
           },
-        ],
-      }),
-    });
+          body: JSON.stringify({
+            model: "claude-sonnet-4-20250514",
+            max_tokens: 1000,
+            system: FEED_PROMPT,
+            messages: [
+              {
+                role: "user",
+                content: "Generate 5 Pakistan petrol crisis news items. JSON array only, no explanation.",
+              },
+            ],
+          }),
+        });
 
-    if (!response.ok) {
-      throw new Error(`Anthropic request failed with status ${response.status}`);
-    }
+        if (!response.ok) {
+          throw new Error(`Anthropic request failed with status ${response.status}`);
+        }
 
-    const data = await response.json();
-    const text = (data.content || []).map((block) => block.text || "").join("");
-    const cleaned = text.replace(/```json|```/g, "").trim();
-    const items = sanitizeFeedItems(JSON.parse(cleaned));
+        const data = await response.json();
+        const text = (data.content || []).map((block) => block.text || "").join("");
+        const cleaned = text.replace(/```json|```/g, "").trim();
+        const items = sanitizeFeedItems(JSON.parse(cleaned));
 
-    if (!items) {
-      throw new Error("Anthropic returned an unexpected feed format");
-    }
+        if (!items) {
+          throw new Error("Anthropic returned an unexpected feed format");
+        }
 
-    return { items, sourceLabel: "Claude AI", feedError: null };
+        return { items, sourceLabel: "Claude AI", feedError: null };
+      }
+    );
+
+    return {
+      ...value,
+      cache,
+    };
   } catch (error) {
     return {
       items: getFallbackFeedItems(),
       sourceLabel: "Fallback Feed",
       feedError: error instanceof Error ? error.message : "AI feed unavailable",
+      cache: {
+        provider: process.env.UPSTASH_REDIS_REST_URL ? "upstash" : "none",
+        status: "fallback",
+        hit: false,
+        key: "petro:feed:ai",
+        ttlSeconds: FEED_CACHE_TTL_SECONDS,
+      },
     };
   }
 }
 
 export async function getPetroDashboardData() {
   const [prices, brent, feed] = await Promise.all([
-    fetchLivePakistanPrices(),
-    fetchLiveBrentCrude(),
+    fetchLivePakistanPrices().catch((error) => ({
+      ...REAL_PRICES,
+      source: "Fallback static data",
+      sourceUrl: null,
+      live: false,
+      error: error instanceof Error ? error.message : "Failed to load Pakistan fuel prices",
+      cache: {
+        provider: process.env.UPSTASH_REDIS_REST_URL ? "upstash" : "none",
+        status: "fallback",
+        hit: false,
+        key: "petro:prices:pakistan",
+        ttlSeconds: PRICE_CACHE_TTL_SECONDS,
+      },
+    })),
+    fetchLiveBrentCrude().catch((error) => ({
+      value: BRENT_CRUDE,
+      period: null,
+      releaseDate: null,
+      source: "Fallback static data",
+      sourceUrl: null,
+      live: false,
+      error: error instanceof Error ? error.message : "Failed to load Brent crude price",
+      cache: {
+        provider: process.env.UPSTASH_REDIS_REST_URL ? "upstash" : "none",
+        status: "fallback",
+        hit: false,
+        key: "petro:prices:brent",
+        ttlSeconds: BRENT_CACHE_TTL_SECONDS,
+      },
+    })),
     fetchAIFeedItems(),
   ]);
   const cities = generateCityData();
@@ -372,6 +424,7 @@ export async function getPetroDashboardData() {
       items: feed.items,
       sourceLabel: feed.sourceLabel,
       error: feed.feedError,
+      cache: feed.cache,
     },
   };
 }
